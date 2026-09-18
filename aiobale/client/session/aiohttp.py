@@ -17,6 +17,9 @@ DEFAULT_USER_AGENT = (
     "Chrome/135.0.0.0 Safari/537.36"
 )
 
+DEFAULT_MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+RESPONSE_READ_CHUNK_SIZE = 64 * 1024
+
 
 class AiohttpSession(BaseSession):
     """
@@ -37,6 +40,8 @@ class AiohttpSession(BaseSession):
         in your environment to use this session implementation.
     """
 
+    max_response_bytes = DEFAULT_MAX_RESPONSE_BYTES
+
     def __init__(
         self, user_agent: Optional[str] = None, proxy: Optional[str] = None, **kwargs
     ) -> None:
@@ -46,6 +51,15 @@ class AiohttpSession(BaseSession):
 
         self.user_agent = user_agent or DEFAULT_USER_AGENT
         self.proxy = proxy
+
+    async def _read_response(self, response: aiohttp.ClientResponse) -> bytes:
+        content = bytearray()
+        async for chunk in response.content.iter_chunked(RESPONSE_READ_CHUNK_SIZE):
+            if len(content) + len(chunk) > self.max_response_bytes:
+                response.close()
+                raise AiobaleError("HTTP response exceeds configured size limit")
+            content.extend(chunk)
+        return bytes(content)
 
     def _build_headers(self, token: str) -> Dict[str, str]:
         return {"User-Agent": self.user_agent, "Cookie": f"access_token={token}"}
@@ -158,7 +172,7 @@ class AiohttpSession(BaseSession):
         payload = add_header(self.encoder(data))
 
         req = await self.session.post(url=url, headers=headers, data=payload)
-        content = await req.read()
+        content = await self._read_response(req)
         grpc_message = req.headers.get("grpc-message")
         if grpc_message is not None:
             if just_bale_type:
